@@ -31,6 +31,7 @@
 #include "utility.h"
 #include "star.h"
 #include "float.h"
+#include <pthread.h> //Include the pthread header file
 
 #define NUM_STARS 30000 
 #define MAX_LINE 1024
@@ -41,7 +42,10 @@ uint8_t   (*distance_calculated)[NUM_STARS];
 
 double  min  = FLT_MAX;
 double  max  = FLT_MIN;
+double distance = 0.0;
 
+uint32_t count_threads = 1;
+pthread_mutex_t mutex;
 
 void showHelp()
 {
@@ -55,9 +59,9 @@ void showHelp()
 // Embarassingly inefficient, intentionally bad method
 // to calculate all entries one another to determine the
 // average angular separation between any two stars 
-float determineAverageAngularDistance( struct Star arr[] )
+float determineAverageAngularDistance( struct Star arr[], int start, int end)
 {
-    double mean = 0;
+    double avg_distance = 0.0;
 
     uint32_t i, j;
     uint64_t count = 0;
@@ -73,24 +77,41 @@ float determineAverageAngularDistance( struct Star arr[] )
                                                       arr[j].RightAscension, arr[j].Declination ) ;
           distance_calculated[i][j] = 1;
           distance_calculated[j][i] = 1;
-          count++;
-
-          if( min > distance )
+          pthread_mutex_lock( &mutex );
           {
-            min = distance;
-          }
-
-          if( max < distance )
-          {
-            max = distance;
-          }
-          mean = mean + (distance-mean)/count;
+            count++;
+            if( min > distance )
+            {
+              min = distance;
+            }
+            if( max < distance )
+            {
+              max = distance;
+            }
+            avg_distance = avg_distance + (distance)/count;
+            pthread_mutex_unlock( &mutex );
+          }  
         }
       }
     }
-    return mean;
+    return avg_distance;
 }
 
+void * threadingFunction(void *arg)
+{
+  int count = (int)arg;
+  int start_time=0, end_time=0, i=0;
+  int interval = NUM_STARS/count_threads;
+  pthread_mutex_lock( &mutex );
+  {
+    start_time = count * interval;
+    count++;
+    end_time = (count * interval);
+  }
+  pthread_mutex_unlock( &mutex );
+  determineAverageAngularDistance(star_array, start_time, end_time);
+
+}
 
 int main( int argc, char * argv[] )
 {
@@ -127,6 +148,10 @@ int main( int argc, char * argv[] )
     {
       showHelp();
       exit(0);
+    }
+    else if (strcmp(argv[n], "-t") == 0)
+    {
+      count_threads = atoi(argv[n+1]);
     }
   }
 
@@ -172,13 +197,31 @@ int main( int argc, char * argv[] )
     star_count++;
   }
   printf("%d records read\n", star_count );
-
+  pthread_t threads [count_threads];
+  clock_t clockNumber;
+  clockNumber = clock();
   // Find the average angular distance in the most inefficient way possible
-  double distance =  determineAverageAngularDistance( star_array );
-  printf("Average distance found is %lf\n", distance );
+  clock_t start_time = clock();
+  pthread_mutex_init(&mutex, NULL);
+  for (i=0; i < count_threads; i++)
+  {
+    pthread_create(&threads[i], NULL, threadingFunction, &i);
+  }
+  for (i=0; i < count_threads; i++)
+  {
+    pthread_join(threads[i], NULL);
+  }
+
+  clock_t end_time = clock();
+  double avg_distance =  determineAverageAngularDistance( star_array, start_time, end_time);
+  printf("Average distance found is %lf\n", avg_distance );
   printf("Minimum distance found is %lf\n", min );
   printf("Maximum distance found is %lf\n", max );
+  double time_spent = ((double)(end_time - start_time))/CLOCKS_PER_SEC;
+  printf("Time Spent: %f seconds\n", time_spent);
 
+  fclose(fp);
+  pthread_exit(NULL);
   return 0;
 }
 
