@@ -33,19 +33,23 @@
 #include "float.h"
 #include <pthread.h> //Include the pthread header file
 
-#define NUM_STARS 30000 
+#define NUM_STARS 30000
 #define MAX_LINE 1024
 #define DELIMITER " \t\n"
 
-struct Star star_array[ NUM_STARS ];
-uint8_t   (*distance_calculated)[NUM_STARS];
+struct Star star_array[NUM_STARS];
+uint8_t (*distance_calculated)[NUM_STARS];
 
-double  min  = FLT_MAX;
-double  max  = FLT_MIN;
+double min = FLT_MAX;
+double max = FLT_MIN;
 double distance = 0.0;
+uint64_t count_threads = 0;
 
-uint32_t count_threads = 1;
+uint32_t thread_count = 1;
 pthread_mutex_t mutex;
+
+int numOfThreads;
+int count;
 
 void showHelp()
 {
@@ -55,67 +59,54 @@ void showHelp()
   printf("-h          Show this help\n");
 }
 
-// 
-// Embarassingly inefficient, intentionally bad method
-// to calculate all entries one another to determine the
-// average angular separation between any two stars 
-float determineAverageAngularDistance( struct Star arr[], int start, int end)
+float determineAverageAngularDistance(struct Star arr[], int start, int end)
 {
-    double avg_distance = 0.0;
+  uint32_t i, j;
 
-    uint32_t i, j;
-    uint64_t count = 0;
-
-
-    for (i = 0; i < NUM_STARS; i++)
+  for (i = start; i < end; i++)
+  {
+    for (j = 0; j < NUM_STARS; j++)
     {
-      for (j = 0; j < NUM_STARS; j++)
+      if (i != j && distance_calculated[i][j] == 0)
       {
-        if( i!=j && distance_calculated[i][j] == 0 )
+        double spacing = calculateAngularDistance(arr[i].RightAscension, arr[i].Declination,
+                                               arr[j].RightAscension, arr[j].Declination);
+        distance_calculated[i][j] = 1;
+        distance_calculated[j][i] = 1;
+        pthread_mutex_lock( &mutex );
+
+        thread_count++;
+
+        if (min > spacing)
         {
-          double distance = calculateAngularDistance( arr[i].RightAscension, arr[j].Declination,
-                                                      arr[j].RightAscension, arr[j].Declination ) ;
-          distance_calculated[i][j] = 1;
-          distance_calculated[j][i] = 1;
-          pthread_mutex_lock( &mutex );
-          {
-            count++;
-            if( min > distance )
-            {
-              min = distance;
-            }
-            if( max < distance )
-            {
-              max = distance;
-            }
-            avg_distance = avg_distance + (distance)/count;
-            pthread_mutex_unlock( &mutex );
-          }  
+          min = spacing;
         }
+
+        if (max < spacing)
+        {
+          max = spacing;
+        }
+        pthread_mutex_unlock( &mutex );
       }
     }
-    return avg_distance;
-}
-
-void * threadingFunction(void *arg)
-{
-  int count = (int)arg;
-  int start_time=0, end_time=0, i=0;
-  int interval = NUM_STARS/count_threads;
-  pthread_mutex_lock( &mutex );
-  {
-    start_time = count * interval;
-    count++;
-    end_time = (count * interval);
   }
-  pthread_mutex_unlock( &mutex );
-  determineAverageAngularDistance(star_array, start_time, end_time);
-
+  return distance;
 }
 
-int main( int argc, char * argv[] )
+void *threading_Function(void *a)
 {
+  int count = (intptr_t)a;
+  int start = 0, end = 0;
+  int interval = NUM_STARS / numOfThreads;
 
+  start = interval * count;
+  end = interval * (count + 1);
+  determineAverageAngularDistance(star_array, start, end);
+  return NULL;
+}
+
+int main(int argc, char *argv[])
+{
   FILE *fp;
   uint32_t star_count = 0;
 
@@ -123,41 +114,31 @@ int main( int argc, char * argv[] )
 
   distance_calculated = malloc(sizeof(uint8_t[NUM_STARS][NUM_STARS]));
 
-  if( distance_calculated == NULL )
+  if (distance_calculated == NULL)
   {
-    uint64_t num_stars = NUM_STARS;
-    uint64_t size = num_stars * num_stars * sizeof(uint8_t);
+    uint64_t size = NUM_STARS * NUM_STARS * sizeof(uint8_t);
     printf("Could not allocate %ld bytes\n", size);
-    exit( EXIT_FAILURE );
+    exit(EXIT_FAILURE);
   }
 
-  int i, j;
-  // default every thing to 0 so we calculated the distance.
-  // This is really inefficient and should be replace by a memset
-  for (i = 0; i < NUM_STARS; i++)
-  {
-    for (j = 0; j < NUM_STARS; j++)
-    {
-      distance_calculated[i][j] = 0;
-    }
-  }
+  memset(distance_calculated, 0, sizeof(uint8_t[NUM_STARS][NUM_STARS]));
 
-  for( n = 1; n < argc; n++ )          
+  for (n = 1; n < argc; n++)
   {
-    if( strcmp(argv[n], "-help" ) == 0 )
+    if (strcmp(argv[n], "-help") == 0)
     {
       showHelp();
       exit(0);
     }
     else if (strcmp(argv[n], "-t") == 0)
     {
-      count_threads = atoi(argv[n+1]);
+      numOfThreads = atoi(argv[n + 1]);
     }
   }
 
-  fp = fopen( "data/tycho-trimmed.csv", "r" );
+  fp = fopen("data/tycho-trimmed.csv", "r");
 
-  if( fp == NULL )
+  if (fp == NULL)
   {
     printf("ERROR: Unable to open the file data/tycho-trimmed.csv\n");
     exit(1);
@@ -168,60 +149,77 @@ int main( int argc, char * argv[] )
   {
     uint32_t column = 0;
 
-    char* tok;
-    for (tok = strtok(line, " ");
-            tok && *tok;
-            tok = strtok(NULL, " "))
+    char *tok;
+    for (tok = strtok(line, " "); tok && *tok; tok = strtok(NULL, " "))
     {
-       switch( column )
-       {
-          case 0:
-              star_array[star_count].ID = atoi(tok);
-              break;
-       
-          case 1:
-              star_array[star_count].RightAscension = atof(tok);
-              break;
-       
-          case 2:
-              star_array[star_count].Declination = atof(tok);
-              break;
+      switch (column)
+      {
+      case 0:
+        star_array[star_count].ID = atoi(tok);
+        break;
 
-          default: 
-             printf("ERROR: line %d had more than 3 columns\n", star_count );
-             exit(1);
-             break;
-       }
-       column++;
+      case 1:
+        star_array[star_count].RightAscension = atof(tok);
+        break;
+
+      case 2:
+        star_array[star_count].Declination = atof(tok);
+        break;
+
+      default:
+        printf("ERROR: line %d had more than 3 columns\n", star_count);
+        exit(1);
+        break;
+      }
+      column++;
     }
     star_count++;
   }
-  printf("%d records read\n", star_count );
-  pthread_t threads [count_threads];
-  clock_t clockNumber;
-  clockNumber = clock();
+  printf("%d records read\n", star_count);
+  pthread_t threads[numOfThreads];
+  clock_t NumOfClocks;
+  NumOfClocks = clock();
   // Find the average angular distance in the most inefficient way possible
   clock_t start_time = clock();
   pthread_mutex_init(&mutex, NULL);
-  for (i=0; i < count_threads; i++)
+  for (int i = 0; i < numOfThreads; i++)
   {
-    pthread_create(&threads[i], NULL, threadingFunction, &i);
+    pthread_create(&threads[i], NULL, threading_Function, (void *)(intptr_t)i);
   }
-  for (i=0; i < count_threads; i++)
+  for (int i = 0; i < numOfThreads; i++)
   {
     pthread_join(threads[i], NULL);
   }
-
   clock_t end_time = clock();
-  double avg_distance =  determineAverageAngularDistance( star_array, start_time, end_time);
-  printf("Average distance found is %lf\n", avg_distance );
-  printf("Minimum distance found is %lf\n", min );
-  printf("Maximum distance found is %lf\n", max );
-  double time_spent = ((double)(end_time - start_time))/CLOCKS_PER_SEC;
-  printf("Time Spent: %f seconds\n", time_spent);
+
+  double total = 0.0;
+  uint64_t count = 0;
+  for (int i = 0; i < NUM_STARS; i++)
+  {
+    for (int j = i + 1; j < NUM_STARS; j++)
+    {
+      if (distance_calculated[i][j])
+      {
+        distance = calculateAngularDistance(
+            star_array[i].RightAscension, star_array[i].Declination,
+            star_array[j].RightAscension, star_array[j].Declination);
+        total += distance;
+        count++;
+      }
+    }
+  }
+
+  double average_distance = total / count;
+
+  printf("Average distance found is %lf\n", average_distance);
+  printf("Minimum distance found is %lf\n", min);
+  printf("Maximum distance found is %lf\n", max);
+  double time_Spent = ((double)(end_time - start_time)) / CLOCKS_PER_SEC;
+  printf("Time Taken: %f seconds \n", time_Spent);
 
   fclose(fp);
   pthread_exit(NULL);
+
   return 0;
 }
 
